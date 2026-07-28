@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile service/agent_service.py)",
+      "Bash(python -m py_compile service/summarize_service.py)",
+      "Bash(python -m py_compile app.py)",
+      "Bash(pip install *)"
+    ]
+  }
+}
