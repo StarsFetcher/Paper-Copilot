@@ -93,22 +93,29 @@ class Settings:
     """本地 Embedding 模型名称（HuggingFace model_id，仅在 EMBEDDING_PROVIDER=local 时生效）"""
 
     # ============================================================
-    # 向量数据库配置 (FAISS)
+    # 向量数据库配置 (Chroma)
     # ============================================================
     VECTOR_DB_PATH: str = os.getenv(
         "VECTOR_DB_PATH",
         str(Path(PROJECT_ROOT) / "data" / "vector_store"),
     )
-    """FAISS 向量库本地持久化路径"""
+    """Chroma 向量库本地持久化路径"""
 
     # ============================================================
     # PDF 文本切片配置
     # ============================================================
     CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", "1000"))
-    """每个文本块的字符数上限"""
+    """每个文本块的字符数上限（用于 RecursiveTextSplitter 回退模式）"""
 
     CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "200"))
     """相邻文本块之间的重叠字符数，用于保持语义连贯性"""
+
+    # 结构感知切片配置（主要策略）
+    STRUCTURAL_CHUNK_TARGET: int = int(os.getenv("STRUCTURAL_CHUNK_TARGET", "1200"))
+    """结构切片的理想块大小，合并时尽量接近此值"""
+
+    STRUCTURAL_CHUNK_MAX: int = int(os.getenv("STRUCTURAL_CHUNK_MAX", "2000"))
+    """结构切片的硬上限，任何块都不超过此值"""
 
     # ============================================================
     # 应用级配置

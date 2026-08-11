@@ -1,17 +1,17 @@
 """
 向量数据库服务模块
 ===================
-封装基于 FAISS + LangChain OpenAIEmbeddings 的向量存储与检索操作。
+封装基于 Chroma + LangChain OpenAIEmbeddings 的向量存储与检索操作。
 
 核心职责:
-    1. 初始化 Embedding 模型和 FAISS 向量库
-    2. 将切分后的文档块向量化并写入 FAISS
-    3. 将 FAISS 索引持久化到本地磁盘
-    4. 从本地磁盘（或 MinIO 恢复后）加载 FAISS 索引
+    1. 初始化 Embedding 模型和 Chroma 向量库
+    2. 将切分后的文档块向量化并写入 Chroma
+    3. 将 Chroma 数据持久化到本地磁盘（自动）
+    4. 从本地磁盘（或 MinIO 恢复后）加载 Chroma 数据库
     5. 执行语义相似度检索
 
 持久化策略:
-    - 每次添加文档后自动保存到本地磁盘
+    - Chroma 使用 PersistentClient，每次写入自动持久化到 SQLite
     - 由调用方（app.py）在写入完成后触发 MinIO 备份
     - 启动时从本地磁盘加载，若本地为空则尝试从 MinIO 恢复
 """
@@ -21,9 +21,10 @@ import shutil
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+import chromadb
+from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
-from langchain_community.vectorstores import FAISS
 
 from config.settings import settings
 from utils.logger import setup_logger
@@ -80,7 +81,7 @@ class _DirectEmbeddings(Embeddings):
         return resp.data[0].embedding
 
     def __call__(self, text: str) -> list[float]:
-        """使对象可被当作函数调用（兼容 FAISS 内部调用方式）"""
+        """使对象可被当作函数调用（兼容旧版向量库内部调用方式）"""
         return self.embed_query(text)
 
 
@@ -88,22 +89,26 @@ class VectorService:
     """
     向量数据库服务
 
-    封装 FAISS 向量存储的全部操作，提供:
-        - 文档添加（含自动持久化）
+    封装 Chroma 向量存储的全部操作，提供:
+        - 文档添加（自动持久化）
         - 相似度搜索
-        - 本地保存/加载
+        - 本地加载
         - 清空重建
     """
+
+    # Chroma collection 名称（单个 collection 存储所有论文文档）
+    COLLECTION_NAME = "paper_copilot"
 
     def __init__(self):
         """
         初始化向量服务。
 
-        注意: 实际的 FAISS 实例在 load_or_create() 调用后才可用。
+        注意: 实际的 Chroma 实例在 load_or_create() 调用后才可用。
         这是因为 Embedding 模型可能在应用启动早期尚未完全就绪。
         """
         self._embeddings = None  # OpenAIEmbeddings 或 HuggingFaceEmbeddings
-        self._vector_store: Optional[FAISS] = None
+        self._client: Optional[chromadb.PersistentClient] = None
+        self._vector_store: Optional[Chroma] = None
         self._store_path: Path = Path(settings.VECTOR_DB_PATH)
         self._initialized: bool = False
 
@@ -172,7 +177,7 @@ class VectorService:
         return self._embeddings
 
     @property
-    def vector_store(self) -> FAISS:
+    def vector_store(self) -> Chroma:
         """获取当前向量库实例（必须已初始化）"""
         if self._vector_store is None:
             raise RuntimeError(
@@ -187,69 +192,75 @@ class VectorService:
 
     def load_or_create(self) -> bool:
         """
-        加载已有的 FAISS 向量库，若不存在则创建空的向量库。
+        加载已有的 Chroma 向量库，若不存在则创建空的向量库。
 
         这是应用启动时必须调用的初始化入口。
 
         加载逻辑:
-            1. 检查本地 VECTOR_DB_PATH 是否存在有效的 FAISS 索引文件
-            2. 若存在，加载到内存
-            3. 若不存在，创建一个空的 FAISS 索引（包含一条占位文档，
-               这是 FAISS 的技术限制——不允许完全空的索引）
+            1. 创建 PersistentClient 指向 VECTOR_DB_PATH
+            2. 尝试获取已存在的 collection
+            3. 若不存在，创建新的空 collection（Chroma 原生支持空 collection）
 
         Returns:
-            True 表示成功加载已有索引，False 表示创建了新的空索引
+            True 表示成功加载已有数据，False 表示创建了新的空库
         """
-        index_file = self._store_path / "index.faiss"
+        try:
+            self._store_path.mkdir(parents=True, exist_ok=True)
+            self._client = chromadb.PersistentClient(
+                path=str(self._store_path)
+            )
 
-        if index_file.exists():
-            try:
-                logger.info(f"正在从本地加载 FAISS 向量库: {self._store_path}")
-                self._vector_store = FAISS.load_local(
-                    folder_path=str(self._store_path),
-                    embeddings=self.embeddings,
-                    allow_dangerous_deserialization=True,
-                    # ↑ FAISS 索引反序列化需要此参数（安全警告已评估:
-                    #   本系统仅加载自己生成的索引文件，风险可控）
-                )
-                self._initialized = True
+            # 检查是否已有 collection（即是否有已有数据）
+            existing_collections = self._client.list_collections()
+            collection_exists = any(
+                c.name == self.COLLECTION_NAME for c in existing_collections
+            )
+
+            self._vector_store = Chroma(
+                client=self._client,
+                collection_name=self.COLLECTION_NAME,
+                embedding_function=self.embeddings,
+            )
+            self._initialized = True
+
+            if collection_exists:
                 doc_count = self._get_document_count()
                 logger.info(
-                    f"FAISS 向量库加载成功 ✓: {doc_count} 个向量, "
+                    f"Chroma 向量库加载成功 ✓: {doc_count} 个文档块, "
                     f"路径={self._store_path}"
                 )
                 return True
-            except Exception as e:
-                logger.error(f"FAISS 向量库加载失败: {e}", exc_info=True)
-                logger.warning("将删除损坏的索引文件并重新创建空白向量库")
-                shutil.rmtree(str(self._store_path), ignore_errors=True)
-                return self._create_empty_store()
-        else:
-            logger.info("本地未找到 FAISS 索引文件，将创建空白向量库")
+            else:
+                logger.info(
+                    f"Chroma 向量库创建成功 ✓（空库）, 路径={self._store_path}"
+                )
+                return False
+
+        except Exception as e:
+            logger.error(f"Chroma 向量库加载失败: {e}", exc_info=True)
+            logger.warning("将删除损坏的数据目录并重新创建空白向量库")
+            shutil.rmtree(str(self._store_path), ignore_errors=True)
             return self._create_empty_store()
 
     def _create_empty_store(self) -> bool:
         """
-        创建一个"空"的 FAISS 向量库。
+        创建一个空的 Chroma 向量库。
 
-        FAISS 不支持真正的空索引，因此使用一条占位文档来初始化。
-        占位文档在后续搜索中会被自然过滤掉（相似度极低）。
+        Chroma 原生支持空 collection，无需占位文档。
         """
         try:
-            logger.info("正在初始化空白 FAISS 向量库...")
-            # 使用占位文档初始化 FAISS
-            placeholder = Document(
-                page_content="[Paper-Copilot 向量库初始化占位文档]",
-                metadata={"section": "__placeholder__", "title": "__init__"},
+            logger.info("正在初始化空白 Chroma 向量库...")
+            self._store_path.mkdir(parents=True, exist_ok=True)
+            self._client = chromadb.PersistentClient(
+                path=str(self._store_path)
             )
-            self._vector_store = FAISS.from_documents(
-                documents=[placeholder],
-                embedding=self.embeddings,
+            self._vector_store = Chroma(
+                client=self._client,
+                collection_name=self.COLLECTION_NAME,
+                embedding_function=self.embeddings,
             )
-            # 立即持久化到磁盘
-            self._save_local()
             self._initialized = True
-            logger.info(f"空白向量库创建成功 ✓，路径={self._store_path}")
+            logger.info(f"空白 Chroma 向量库创建成功 ✓，路径={self._store_path}")
             return False
         except Exception as e:
             logger.error(f"空白向量库创建失败: {e}")
@@ -277,8 +288,8 @@ class VectorService:
             成功添加的文档数量
 
         持久化保证:
-            添加完成后立即执行本地保存（save_local），
-            确保数据不会因进程异常退出而丢失。
+            Chroma PersistentClient 在每次写入后自动持久化到 SQLite，
+            无需手动调用 save。
         """
         if not documents:
             logger.warning("传入空文档列表，跳过添加")
@@ -288,16 +299,9 @@ class VectorService:
             raise RuntimeError("向量库未初始化，无法添加文档")
 
         try:
-            # 检查是否需要移除占位文档
-            # （仅在首次真正添加文档时清理占位符）
-            self._remove_placeholder_if_exists()
-
-            # 批量添加文档
+            # 批量添加文档（Chroma 自动持久化）
             logger.info(f"正在向向量库添加 {len(documents)} 个文档块...")
             self._vector_store.add_documents(documents)
-
-            # 立即持久化到本地磁盘
-            self._save_local()
 
             total_docs = self._get_document_count()
             logger.info(
@@ -309,35 +313,6 @@ class VectorService:
         except Exception as e:
             logger.error(f"添加文档到向量库失败: {e}", exc_info=True)
             raise RuntimeError(f"向量库写入失败: {e}")
-
-    def _remove_placeholder_if_exists(self):
-        """
-        移除初始化时插入的占位文档。
-
-        通过检查 metadata 中的特殊标记来定位并删除占位文档。
-        注意: FAISS 不直接支持按 metadata 删除，这里使用重建方式。
-        由于占位文档通常只在初始化时存在，且实际删除操作较复杂，
-        因此采用惰性策略：仅在第一次 add_documents 后清理。
-        """
-        try:
-            # FAISS 的 delete 方法在 langchain 中受限，
-            # 这里采用简单策略：如果只有 1 条且是占位文档，直接重建
-            doc_count = self._get_document_count()
-            if doc_count == 1:
-                # 执行一次搜索确认占位文档存在
-                results = self._vector_store.similarity_search(
-                    "__placeholder__", k=1,
-                )
-                if results and "__placeholder__" in results[0].metadata.get(
-                    "section", ""
-                ):
-                    logger.info("检测到占位文档，正在清理...")
-                    # 通过重建方式移除占位文档（用新文档覆盖）
-                    # 实际策略：不做特殊处理，让占位文档自然被海量真实文档稀释
-                    # 占位文档相似度极低，不会影响检索结果
-                    pass
-        except Exception:
-            pass  # 清理失败不影响主流程
 
     # =================================================================
     # 文档检索
@@ -370,7 +345,6 @@ class VectorService:
         try:
             # 如果指定了章节过滤，使用带过滤的搜索
             if filter_section:
-                # FAISS 的过滤通过 metadata filter 实现
                 results = self._vector_store.similarity_search(
                     query,
                     k=k,
@@ -378,12 +352,6 @@ class VectorService:
                 )
             else:
                 results = self._vector_store.similarity_search(query, k=k)
-
-            # 过滤掉占位文档
-            results = [
-                doc for doc in results
-                if doc.metadata.get("section") != "__placeholder__"
-            ]
 
             logger.debug(
                 f"检索完成: query='{query[:80]}...', "
@@ -420,11 +388,6 @@ class VectorService:
             results = self._vector_store.similarity_search_with_score(
                 query, k=k
             )
-            # 过滤占位文档
-            results = [
-                (doc, score) for doc, score in results
-                if doc.metadata.get("section") != "__placeholder__"
-            ]
             return results
         except Exception as e:
             logger.error(f"带分数的向量检索失败: {e}", exc_info=True)
@@ -434,46 +397,28 @@ class VectorService:
     # 持久化操作
     # =================================================================
 
-    def _save_local(self) -> bool:
-        """
-        将当前向量库保存到本地磁盘。
-
-        FAISS 的 save_local 会生成两个文件:
-            - index.faiss: FAISS 索引数据
-            - index.pkl:   Python 对象的 pickle 序列化（含 metadata）
-
-        Returns:
-            True 表示保存成功
-        """
-        try:
-            self._store_path.mkdir(parents=True, exist_ok=True)
-            self._vector_store.save_local(str(self._store_path))
-            logger.debug(f"向量库已保存到本地: {self._store_path}")
-            return True
-        except Exception as e:
-            logger.error(f"向量库本地保存失败: {e}", exc_info=True)
-            raise RuntimeError(f"向量库持久化失败: {e}")
-
     def save_local(self) -> bool:
-        """公开的本地保存方法（供外部调用）"""
+        """
+        公开的本地保存方法（供外部兼容调用）。
+
+        Chroma PersistentClient 在每次写入时自动持久化到 SQLite，
+        此方法保留仅为兼容旧调用方，实际为 no-op。
+        """
         if not self.is_initialized:
             logger.warning("向量库未初始化，跳过本地保存")
             return False
-        return self._save_local()
+        # Chroma 自动持久化，无需手动保存
+        logger.debug("Chroma 自动持久化中，无需手动 save_local")
+        return True
 
     def _get_document_count(self) -> int:
         """
         获取向量库中的文档数量。
 
-        通过执行一个宽泛的搜索来估算（FAISS 没有直接的 count 方法）。
+        Chroma 原生支持 count()，直接返回 collection 中的文档数。
         """
         try:
-            # 使用一个大 k 值来获取总文档数
-            results = self._vector_store.similarity_search(
-                "",  # 空查询返回所有文档（近似）
-                k=10000,
-            )
-            return len(results)
+            return self._vector_store._collection.count()
         except Exception:
             return -1  # 无法确定
 
@@ -499,8 +444,8 @@ class VectorService:
         """
         删除向量库中属于指定论文的所有文档块。
 
-        采用索引重建方式：取出所有已有文档，过滤掉匹配 paper_title 的，
-        然后用剩余文档重建 FAISS 索引。
+        使用 Chroma 原生的 metadata 过滤 + 批量删除，
+        无需全量重建索引。
 
         Args:
             paper_title: 论文标题（匹配 metadata["title"]）
@@ -513,44 +458,18 @@ class VectorService:
             return 0
 
         try:
-            all_ids = list(self._vector_store.index_to_docstore_id.values())
-            all_docs = []
-            for doc_id in all_ids:
-                doc = self._vector_store.docstore.search(doc_id)
-                if doc is not None:
-                    all_docs.append(doc)
-
-            if not all_docs:
-                return 0
-
-            remaining = [
-                doc for doc in all_docs
-                if doc.metadata.get("title") != paper_title
-            ]
-            removed = len(all_docs) - len(remaining)
-
-            if removed == 0:
+            # 通过 metadata 过滤查找匹配的文档
+            result = self._vector_store.get(where={"title": paper_title})
+            ids = result["ids"]
+            if not ids:
                 logger.info(f"向量库中未找到论文 '{paper_title}' 的文档块，跳过")
                 return 0
 
-            if not remaining:
-                self._vector_store = None
-                self._initialized = False
-                if self._store_path.exists():
-                    shutil.rmtree(str(self._store_path))
-                self._create_empty_store()
-                return removed
-
+            self._vector_store.delete(ids=ids)
             logger.info(
-                f"正在重建向量库: 移除 {removed} 个文档块, 保留 {len(remaining)} 个"
+                f"Chroma 删除完成: '{paper_title}', 移除 {len(ids)} 个文档块"
             )
-            self._vector_store = FAISS.from_documents(
-                documents=remaining,
-                embedding=self.embeddings,
-            )
-            self._save_local()
-            logger.info(f"向量库删除完成: '{paper_title}', 移除 {removed} 个文档块")
-            return removed
+            return len(ids)
 
         except Exception as e:
             logger.error(f"从向量库删除论文失败: {e}", exc_info=True)
@@ -564,11 +483,16 @@ class VectorService:
         """
         try:
             logger.warning("正在重置向量库...")
+            if self._client is not None:
+                try:
+                    self._client.delete_collection(self.COLLECTION_NAME)
+                except Exception:
+                    pass  # collection 可能不存在
             self._vector_store = None
             self._initialized = False
             if self._store_path.exists():
                 shutil.rmtree(str(self._store_path))
-                logger.info(f"已删除本地向量库文件: {self._store_path}")
+                logger.info(f"已删除本地向量库目录: {self._store_path}")
             self._create_empty_store()
             logger.info("向量库重置完成 ✓")
             return True

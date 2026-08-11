@@ -58,7 +58,7 @@ flowchart TD
 |---|---|---|
 | 问题分析 | `plan_node` | 规则判断意图（闲聊→跳过搜索；找论文→直通arXiv）；复杂问题调LLM拆成多个搜索角度。第2轮起会带上已搜结果，让LLM生成**新**角度 |
 | 角度确认 | `human_review_node` | 角度太多时暂停，展示给用户勾选，减少无效搜索 |
-| 并行检索 | `search_angle_node` | 每个角度一个实例，同时去FAISS搜论文片段，结果自动合并去重 |
+| 并行检索 | `search_angle_node` | 每个角度一个实例，同时去Chroma向量库搜论文片段，结果自动合并去重 |
 | 结果检查 | `evaluate_results_node` | LLM判断搜到的内容是否足以回答，决定继续循环还是跳出 |
 | arXiv搜索 | `arxiv_search_node` | 本地库没有时，去arXiv在线搜，只执行一次 |
 | 生成回答 | `synthesize_node` | 汇总所有片段去重截断，LLM流式生成回答并标注来源 |

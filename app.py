@@ -29,7 +29,7 @@ import traceback
 from pathlib import Path
 from typing import Dict, Any
 
-from flask import Flask, request, jsonify, Response, stream_with_context, render_template
+from flask import Flask, request, jsonify, Response, stream_with_context, render_template, send_from_directory
 
 from config.settings import settings
 from utils.logger import setup_logger
@@ -85,7 +85,7 @@ def _init_vector_store() -> Dict[str, Any]:
     启动步骤 2: 初始化向量数据库。
 
     加载顺序:
-        1. 首先尝试从本地磁盘加载 FAISS 索引
+        1. 首先尝试从本地磁盘加载 Chroma 向量库
         2. 如果本地不存在，尝试从本地备份目录恢复
         3. 如果备份也不存在，创建空白向量库
     """
@@ -228,12 +228,25 @@ def _get_system_stats() -> Dict[str, Any]:
 # 前端页面路由
 # ================================================================
 
+FRONTEND_DIST = Path(__file__).resolve().parent / "frontend" / "dist"
+
 @app.route("/")
 def index():
     """
-    前端首页 — 返回 Vue 3 SPA 聊天界面。
+    前端首页 — 返回 Vue 3 + Vite SPA。
+    生产环境使用 npm run build 构建产物，开发环境使用 npm run dev (Vite dev server :5173)。
     """
+    if FRONTEND_DIST.exists():
+        return send_from_directory(FRONTEND_DIST, "index.html")
+    # Fallback for dev without build: use old Jinja template
     return render_template("index.html")
+
+@app.route("/assets/<path:filename>")
+def spa_assets(filename):
+    """
+    SPA 静态资源（JS / CSS / 字体等），带长期缓存。
+    """
+    return send_from_directory(FRONTEND_DIST / "assets", filename, max_age=31536000)
 
 
 # ================================================================
@@ -289,7 +302,7 @@ def upload_paper():
         2. 保存原始 PDF 到本地 papers 目录
         3. 提取 PDF 全文文本（处理双栏排版）
         4. 基于学术章节的语义切片
-        5. 向量化并写入 FAISS 本地向量库
+        5. 向量化并写入 Chroma 本地向量库
         6. 备份向量库到本地 backups 目录
 
     Returns:
@@ -375,10 +388,10 @@ def upload_paper():
                 "该 PDF 可能是扫描版（纯图片），暂不支持 OCR 识别。",
             )
 
-        # 提取论文元数据（标题等）
-        paper_metadata = pdf_service.extract_paper_metadata(full_text, file.filename)
-        # 合并 PDF 级别元数据
-        paper_metadata.update(pdf_metadata)
+        # 提取论文元数据（标题等）—— 传入 PDF 级别元数据辅助提取
+        paper_metadata = pdf_service.extract_paper_metadata(full_text, file.filename, pdf_metadata)
+        # 合并 PDF 级别元数据（content_hash, page_count 等）
+        paper_metadata.update({k: v for k, v in pdf_metadata.items() if k not in ("pdf_metadata", "first_page_fonts")})
 
         # ----------------------------------------------------------
         # 步骤 4: 语义切片
@@ -980,7 +993,7 @@ def list_library_papers():
 @app.route("/api/library/papers/batch-delete", methods=["POST"])
 def batch_delete_library_papers():
     """
-    批量删除论文（SQLite + FAISS + 本地 PDF）。
+    批量删除论文（SQLite + Chroma + 本地 PDF）。
 
     请求: { "paper_ids": [...], "delete_files": bool }
     """
@@ -1014,7 +1027,7 @@ def batch_delete_library_papers():
                     try:
                         vector_service.delete_by_title(paper_id)
                     except Exception as ve:
-                        logger.warning(f"FAISS 删除失败 (继续): {ve}")
+                        logger.warning(f"Chroma 删除失败 (继续): {ve}")
 
                 if delete_files and paper and paper.get("storage_path"):
                     try:
@@ -1045,7 +1058,7 @@ def batch_delete_library_papers():
 @app.route("/api/library/papers/<path:paper_id>", methods=["DELETE"])
 def delete_library_paper(paper_id):
     """
-    删除单篇论文（SQLite + FAISS + 本地 PDF）。
+    删除单篇论文（SQLite + Chroma + 本地 PDF）。
     """
     from urllib.parse import unquote
     from service.paper_library import get_paper_library
@@ -1072,7 +1085,7 @@ def delete_library_paper(paper_id):
             try:
                 vector_service.delete_by_title(decoded_id)
             except Exception as ve:
-                logger.warning(f"FAISS 删除失败 (继续): {ve}")
+                logger.warning(f"Chroma 删除失败 (继续): {ve}")
 
         storage_path = paper.get("storage_path")
         if storage_path:
@@ -1164,9 +1177,9 @@ def scan_papers():
         if not full_text or len(full_text.strip()) < 50:
             return {"ok": False, "error": "文本过短（可能是扫描版）", "hash": content_hash, "path": rel_path}
 
-        # 提取元数据
-        paper_metadata = pdf_service.extract_paper_metadata(full_text, fpath.name)
-        paper_metadata.update(pdf_metadata)
+        # 提取元数据 —— 传入 PDF 级别元数据辅助提取
+        paper_metadata = pdf_service.extract_paper_metadata(full_text, fpath.name, pdf_metadata)
+        paper_metadata.update({k: v for k, v in pdf_metadata.items() if k not in ("pdf_metadata", "first_page_fonts")})
 
         # 语义切片
         documents = pdf_service.semantic_chunk(full_text, paper_metadata)
@@ -1673,11 +1686,11 @@ _init_result = None
 
 if __name__ == "__main__":
     _init_result = init_app()
+
     app.run(
         host="0.0.0.0",
         port=5000,
-        debug=True,
-        threaded=True,  # 多线程模式以支持流式请求
+        debug=False,
     )
 else:
     # 作为 WSGI 模块被加载时，也在导入时初始化

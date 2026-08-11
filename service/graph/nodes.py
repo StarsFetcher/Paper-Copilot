@@ -557,7 +557,7 @@ def arxiv_search_node(state: ResearchState) -> Dict[str, Any]:
     Search arXiv for papers when local vector store has insufficient results.
 
     This node is reached when:
-        - Local FAISS search returns 0 results for ALL angles, OR
+        - Local Chroma search returns 0 results for ALL angles, OR
         - The evaluate node says "needs_more" and arXiv hasn't been tried yet
 
     It calls the PaperDiscoveryService to search arXiv, then formats
@@ -702,6 +702,30 @@ def synthesize_node(state: ResearchState) -> Dict[str, Any]:
             msg for msg in state_messages
             if isinstance(msg, AIMessage) and msg.content.startswith("[系统上下文]")
         ]
+
+        # --- 检查是否为"本地论文列表为空"场景，跳过 LLM 直接返回硬编码回答 ---
+        # LLM 可能会无视 context_msg 中的"库为空"指令，编造论文列表（幻觉），
+        # 因此对于这类确定性场景直接硬编码回答，不经过 LLM。
+        is_empty_library = any(
+            "当前本地论文库为空" in msg.content
+            for msg in context_msgs
+        )
+        if is_empty_library:
+            hardcoded_answer = (
+                "你的本地论文库目前是空的，还没有存储任何论文。\n\n"
+                "你可以通过以下方式添加论文：\n"
+                "1. **上传 PDF**：在管理界面上传论文 PDF 文件，系统会自动解析并入库\n"
+                "2. **扫描目录**：使用扫描功能批量导入本地文件夹中的 PDF\n"
+                "3. **论文发现**：输入研究方向，系统会从 arXiv 搜索相关论文并自动入库"
+            )
+            # 流式输出硬编码回答
+            for char in hardcoded_answer:
+                writer({"type": "token", "content": char})
+            return {
+                "final_answer": hardcoded_answer,
+                "sources": [],
+                "phase": "synthesize",
+            }
 
         messages = [SystemMessage(content=AGENT_SYSTEM_PROMPT)]
         messages.extend(context_msgs)

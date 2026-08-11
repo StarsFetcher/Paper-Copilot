@@ -40,7 +40,7 @@ ReAct 循环（Reason → Act → Observe → Reason），6 个节点，代码�
 ---
 
 ### 2. `search_angle_node` — 知识库检索（并行）
-每个搜索角度启动一个独立实例，同时去 FAISS 向量库做相似度检索，返回相关论文段落。所有实例的结果由自定义 Reducer 按（内容前 80 字 + 论文标题）自动合并去重。本节点不调 LLM，纯向量数学运算。
+每个搜索角度启动一个独立实例，同时去 Chroma 向量库做相似度检索，返回相关论文段落。所有实例的结果由自定义 Reducer 按（内容前 80 字 + 论文标题）自动合并去重。本节点不调 LLM，纯向量数学运算。
 → `evaluate_results_node`
 
 ---
@@ -63,7 +63,7 @@ LLM（temperature=0.0）审查所有已检索到的论文片段，判断是否�
 ---
 
 ### 4. `synthesize_node` — 生成回答
-汇总所有搜到的论文片段（可能来自本地 FAISS + arXiv 两路），按内容前 80 字去重，每段截断至 1200 字、总计不超过 8000 字。调用 LLM（streaming=True），逐 token 通过 `get_stream_writer()` 发射 SSE 事件给前端，实现流式输出。最终回答中标注论文来源。
+汇总所有搜到的论文片段（可能来自本地 Chroma + arXiv 两路），按内容前 80 字去重，每段截断至 1200 字、总计不超过 8000 字。调用 LLM（streaming=True），逐 token 通过 `get_stream_writer()` 发射 SSE 事件给前端，实现流式输出。最终回答中标注论文来源。
 → END
 
 ---
@@ -114,7 +114,7 @@ LLM 逐篇做六维结构化提取：背景、方法、实验、贡献、局限�
 → `store_node`
 
 ### 4. `store_node` — 入库存储
-论文元数据和分析结果写入 SQLite。后续上传 PDF 全文、分词向量化后进入 FAISS，可被图一检索。
+论文元数据和分析结果写入 SQLite。后续上传 PDF 全文、分词向量化后进入 Chroma 向量库，可被图一检索。
 → END
 
 ---
@@ -124,17 +124,17 @@ LLM 逐篇做六维结构化提取：背景、方法、实验、贡献、局限�
 ```
 图二（Paper Workflow Graph）
     │  产出：论文元数据 + 分析结果 → SQLite
-    │  上传 PDF → 分词向量化 → FAISS 向量库
+    │  上传 PDF → 分词向量化 → Chroma 向量库
     ▼
 图一（Research Graph）
-    │  从 FAISS 向量库检索论文片段
+    │  从 Chroma 向量库检索论文片段
     │  兜底时从 arXiv 在线搜索
     │  最终生成带引用的流式回答
     ▼
   用户
 ```
 
-图一是用户的日常交互入口（提问→回答），图二是批量入库工具（研究方向→论文入库）。两者通过 FAISS 向量库连接。
+图一是用户的日常交互入口（提问→回答），图二是批量入库工具（研究方向→论文入库）。两者通过 Chroma 向量库连接。
 
 ---
 
@@ -152,7 +152,7 @@ LLM 逐篇做六维结构化提取：背景、方法、实验、贡献、局限�
 | `service/graph/paper_workflow_graph.py` | 图二 StateGraph 构建与编译 |
 | `service/graph/checkpoint.py` | 检查点工厂（Memory/SQLite） |
 | `service/graph/streaming.py` | SSE 流式适配器 |
-| `service/vector_service.py` | FAISS 向量库管理 |
+| `service/vector_service.py` | Chroma 向量库管理 |
 | `service/pdf_service.py` | PDF 解析 + 学术章节识别 + 语义分块 |
 | `service/storage_service.py` | 本地文件存储（论文 PDF + 向量库备份） |
 | `service/paper_library.py` | SQLite 论文元数据库 |
