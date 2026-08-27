@@ -1,0 +1,93 @@
+/* ============================================================
+   Paper-Copilot — Markdown Content Styles
+   Applied inside .message-bubble (assistant messages)
+   ============================================================ */
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+    margin: 18px 0 10px;
+    font-weight: 700;
+    line-height: 1.4;
+    color: var(--main-heading);
+}
+.markdown-body h1 {
+    font-size: 1.35em;
+    border-bottom: 2px solid var(--accent-light);
+    padding-bottom: 8px;
+}
+.markdown-body h2 { font-size: 1.18em; }
+.markdown-body h3 { font-size: 1.05em; }
+.markdown-body p { margin: 8px 0; }
+.markdown-body p:first-child { margin-top: 0; }
+.markdown-body p:last-child { margin-bottom: 0; }
+.markdown-body ul, .markdown-body ol {
+    margin: 10px 0;
+    padding-left: 24px;
+}
+.markdown-body li { margin: 5px 0; }
+.markdown-body strong {
+    font-weight: 700;
+    color: var(--accent);
+}
+.markdown-body blockquote {
+    margin: 12px 0;
+    padding: 10px 16px;
+    border-left: 3px solid var(--accent);
+    background: var(--accent-light);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    color: var(--main-muted);
+    font-style: italic;
+}
+.markdown-body code {
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+    font-size: 0.88em;
+    background: #f0f1f7;
+    padding: 2px 7px;
+    border-radius: 4px;
+    color: #d44050;
+}
+
+.message-wrapper.user .markdown-body code {
+    background: rgba(255,255,255,0.18);
+    color: rgba(255,255,255,0.95);
+}
+
+.markdown-body pre {
+    margin: 12px 0;
+    border-radius: var(--radius-sm);
+    overflow-x: auto;
+}
+.markdown-body pre code {
+    display: block;
+    padding: 16px 18px;
+    background: #1a1b2e;
+    color: #cdd6f4;
+    font-size: 0.85em;
+    line-height: 1.65;
+    border-radius: var(--radius-sm);
+}
+.markdown-body table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 0.92em;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+.markdown-body th {
+    background: var(--accent-light);
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 0.9em;
+}
+.markdown-body td {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--main-border);
+}
+.markdown-body hr {
+    margin: 18px 0;
+    border: none;
+    border-top: 1px solid var(--main-border);
+}
+.markdown-body .katex { font-size: 1.05em; }
+.markdown-body .katex-display { margin: 14px 0; overflow-x: auto; overflow-y: hidden; }

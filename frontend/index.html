@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Paper-Copilot — 学术论文智能助手</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
+</head>
+<body>
+    <!-- 加载中遮罩，Vue 挂载后自动消失 -->
+    <div id="loading-overlay" style="position:fixed;inset:0;background:#f5f5f9;display:flex;align-items:center;justify-content:center;z-index:9999;font-family:sans-serif;">
+        <div style="text-align:center;">
+            <div style="font-size:48px;margin-bottom:16px;">📚</div>
+            <p style="color:#6c7086;">Paper-Copilot 加载中…</p>
+        </div>
+    </div>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
